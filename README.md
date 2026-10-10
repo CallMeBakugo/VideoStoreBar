@@ -1,21 +1,22 @@
 # VideoStoreBar
 
-Omarchy bar-widget companion to [VideoStore](../ytdl-box): a VSB chip on
-your bar that downloads whatever link is in your clipboard. Left-click:
-Paste. Right-click: settings (format + download folder, current choice
-highlighted). While a download runs, the chip becomes a progress bar and
-Paste greys out in favour of Cancel. No history, no memory.
+Omarchy bar-widget companion to [VideoStore](https://github.com/CallMeBakugo/VideoStore):
+a VSB chip on your bar that downloads whatever link is in your clipboard.
+Left-click: Paste. Right-click: settings (format + download folder, the
+current choice highlighted with a checkmark). While a download runs, the
+chip becomes a progress bar and Paste greys out in favour of Cancel.
+No history, no memory — last-download status only, never a filename.
 
 ## Install
 
-    mkdir -p ~/.config/omarchy/plugins
-    cp -r bakugo.videostorebar ~/.config/omarchy/plugins/
-    install -Dm755 vsb-daemon ~/.local/bin/vsb-daemon
+    omarchy plugin clone CallMeBakugo/VideoStoreBar
     omarchy bar put bakugo.videostorebar --section right --after omarchy.tray
+    install -Dm755 vsb-daemon ~/.local/bin/vsb-daemon
 
-The daemon needs `~/Public/ytdl-box/core.py` on its import path (edit the
-sys.path line in `vsb-daemon` if you keep the core elsewhere), plus
-`yt-dlp`, `wl-paste` (clipboard), and Python 3.
+The daemon needs the `core.py` engine from
+[VideoStore](https://github.com/CallMeBakugo/VideoStore) on its import
+path (edit the `sys.path` line in `vsb-daemon` if you keep that repo
+elsewhere), plus `yt-dlp`, `wl-paste` (clipboard), and Python 3.
 
 ## Pieces
 
