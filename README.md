@@ -7,6 +7,10 @@ current choice highlighted with a checkmark). While a download runs, the
 chip becomes a progress bar and Paste greys out in favour of Cancel.
 No history, no memory — last-download status only, never a filename.
 
+![Left-click: the paste flyout](preview.png)
+
+![Right-click: settings panel](docs-rightclick.png)
+
 ## Install
 
     omarchy plugin clone CallMeBakugo/VideoStoreBar
