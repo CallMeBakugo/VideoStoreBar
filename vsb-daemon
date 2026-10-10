@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+import json
+import os
+import signal
+import subprocess
+import sys
+
+sys.path.insert(0, "/home/bakugo/Public/ytdl-box")
+from core import FORMATS, Grabber  # noqa: E402
+
+STATE_DIR = os.path.expanduser("~/.local/state/videostorebar")
+STATE_FILE = os.path.join(STATE_DIR, "state.json")
+CONF_FILE = os.path.join(STATE_DIR, "settings.json")
+LOCK_FILE = os.path.join(STATE_DIR, "daemon.pid")
+
+
+def read_settings() -> dict:
+    s = {"format": "label_best", "outdir": Grabber.default_outdir()}
+    if os.path.exists(CONF_FILE):
+        with open(CONF_FILE) as f:
+            s.update(json.load(f))
+    # normalize: expand ~, force absolute so downloads never land relative
+    s["outdir"] = os.path.abspath(os.path.expanduser(str(s["outdir"])))
+    return s
+
+
+def write_state(state: str, pct: float = 0, last: str | None = None) -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    cur = {}
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE) as f:
+            cur = json.load(f)
+    cur["state"] = state
+    cur["pct"] = pct
+    if last is not None:
+        cur["last"] = last
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cur, f)
+    os.replace(tmp, STATE_FILE)
+
+
+def get_url() -> str | None:
+    try:
+        out = subprocess.run(
+            ["wl-paste", "--no-newline"], capture_output=True, text=True, timeout=2
+        )
+        url = out.stdout.strip()
+    except Exception:  # noqa: BLE001
+        return None
+    return url if url.startswith(("http://", "https://")) else None
+
+
+def child_run(url: str) -> None:
+    os.setsid()
+    # anchor relative outdirs to home, never to the caller's cwd
+    os.chdir(os.path.expanduser("~"))
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    s = read_settings()
+    if s["format"] not in FORMATS:
+        s["format"] = "label_best"
+    g = Grabber()
+    write_state("downloading", 0)
+    last = "completed"
+    try:
+        cmd_list = g.build_cmd(url, s["format"], s["outdir"])
+        g.run(
+            cmd_list,
+            on_progress=lambda p: write_state("downloading", p),
+            on_file=lambda f: None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        was_cancelled = (
+            getattr(g.proc, "returncode", None) is not None
+            and g.proc.returncode != 0
+            and "exited with code" in msg
+        )
+        last = "cancelled" if was_cancelled else "failed"
+    write_state("idle", 0, last)
+    try:
+        os.remove(LOCK_FILE)
+    except FileNotFoundError:
+        pass
+
+
+def main() -> None:
+    os.makedirs(STATE_DIR, exist_ok=True)
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    if cmd == "status":
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE) as f:
+                print(f.read())
+        else:
+            print(json.dumps({"state": "idle", "pct": 0, "last": "none"}))
+        return
+
+    if cmd == "settings":
+        print(json.dumps(read_settings()))
+        return
+
+    if cmd == "set":
+        s = read_settings()
+        for arg in sys.argv[2:]:
+            k, _, v = arg.partition("=")
+            if k in ("format", "outdir"):
+                s[k] = v
+        with open(CONF_FILE, "w") as f:
+            json.dump(s, f)
+        print(json.dumps(s))
+        return
+
+    if cmd == "cancel":
+        if os.path.exists(LOCK_FILE):
+            try:
+                os.kill(int(open(LOCK_FILE).read().strip()), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
+        return
+
+    if cmd == "start":
+        if os.path.exists(LOCK_FILE):
+            try:
+                pid = int(open(LOCK_FILE).read().strip())
+                os.kill(pid, 0)
+                print(json.dumps({"error": "download in progress"}))
+                return
+            except (ProcessLookupError, ValueError):
+                pass
+        url = get_url()
+        if not url:
+            print(json.dumps({"error": "no url in clipboard"}))
+            return
+        pid = os.fork()
+        if pid > 0:
+            with open(LOCK_FILE, "w") as f:
+                f.write(str(pid))
+            print(json.dumps({"started": True, "url": url}))
+            return
+        child_run(url)
+        os._exit(0)
+
+    print("usage: vsb-daemon start|cancel|status|settings|set", file=sys.stderr)
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
