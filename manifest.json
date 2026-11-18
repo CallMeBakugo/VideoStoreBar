@@ -2,19 +2,23 @@
   "schemaVersion": 1,
   "id": "bakugo.videostorebar",
   "name": "VideoStoreBar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "CallMeBakugo",
   "license": "MIT",
-  "description": "Bar chip that downloads the link on your clipboard with yt-dlp. Left click: paste. Right click: settings.",
-  "kinds": ["bar-widget"],
+  "description": "Download video or audio from a clipboard link with an Omarchy bar progress indicator.",
+  "kinds": [
+    "bar-widget"
+  ],
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
   "barWidget": {
     "displayName": "VideoStoreBar",
-    "description": "Paste-to-download video grabber chip. No memory, no history — status only.",
-    "category": "media",
-    "aliases": ["vsb"],
+    "description": "Download video or audio from a clipboard link with an Omarchy bar progress indicator.",
+    "category": "Media",
+    "aliases": [
+      "vsb"
+    ],
     "allowMultiple": false,
     "defaults": {},
     "schema": []

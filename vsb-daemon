@@ -1,149 +1,191 @@
 #!/usr/bin/env python3
+import fcntl
 import json
 import os
+from pathlib import Path
 import signal
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
-sys.path.insert(0, "/home/bakugo/Public/ytdl-box")
-from core import FORMATS, Grabber  # noqa: E402
+from core import FORMATS, Grabber
 
-STATE_DIR = os.path.expanduser("~/.local/state/videostorebar")
-STATE_FILE = os.path.join(STATE_DIR, "state.json")
-CONF_FILE = os.path.join(STATE_DIR, "settings.json")
-LOCK_FILE = os.path.join(STATE_DIR, "daemon.pid")
-
-
-def read_settings() -> dict:
-    s = {"format": "label_best", "outdir": Grabber.default_outdir()}
-    if os.path.exists(CONF_FILE):
-        with open(CONF_FILE) as f:
-            s.update(json.load(f))
-    # normalize: expand ~, force absolute so downloads never land relative
-    s["outdir"] = os.path.abspath(os.path.expanduser(str(s["outdir"])))
-    return s
+STATE_DIR = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "videostorebar"
+STATE_FILE = STATE_DIR / "state.json"
+SETTINGS_FILE = STATE_DIR / "settings.json"
+DOWNLOAD_LOCK = STATE_DIR / "download.lock"
+WORKER_FILE = STATE_DIR / "worker.json"
 
 
-def write_state(state: str, pct: float = 0, last: str | None = None) -> None:
-    os.makedirs(STATE_DIR, exist_ok=True)
-    cur = {}
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE) as f:
-            cur = json.load(f)
-    cur["state"] = state
-    cur["pct"] = pct
-    if last is not None:
-        cur["last"] = last
-    tmp = STATE_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cur, f)
-    os.replace(tmp, STATE_FILE)
-
-
-def get_url() -> str | None:
+def read_json(path):
     try:
-        out = subprocess.run(
-            ["wl-paste", "--no-newline"], capture_output=True, text=True, timeout=2
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_json(path, data):
+    temporary = path.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(data))
+    temporary.replace(path)
+
+
+def settings():
+    config = read_json(SETTINGS_FILE)
+    format_key = config.get("format")
+    folder = config.get("outdir")
+    outdir = Path(folder if isinstance(folder, str) and folder else Grabber.default_outdir()).expanduser()
+    if not outdir.is_absolute():
+        outdir = Path.home() / outdir
+    return {
+        "format": format_key if isinstance(format_key, str) and format_key in FORMATS else "label_best",
+        "outdir": os.path.normpath(outdir),
+    }
+
+
+def get_url():
+    try:
+        clipboard = subprocess.run(
+            ["wl-paste", "--no-newline"], capture_output=True, text=True, check=True, timeout=2
         )
-        url = out.stdout.strip()
-    except Exception:  # noqa: BLE001
+        url = clipboard.stdout.strip()
+        parsed = urlsplit(url)
+    except (ValueError, OSError, subprocess.SubprocessError):
         return None
-    return url if url.startswith(("http://", "https://")) else None
+    if parsed.scheme in {"https", "http"} and parsed.hostname and not any(char.isspace() for char in url):
+        return url
+    return None
 
 
-def child_run(url: str) -> None:
+def process_start_time(pid):
+    stat = Path(f"/proc/{pid}/stat").read_text()
+    return stat.rsplit(")", 1)[1].split()[19]
+
+
+def run_download(url, ready_fd):
     os.setsid()
-    # anchor relative outdirs to home, never to the caller's cwd
-    os.chdir(os.path.expanduser("~"))
-    with open(LOCK_FILE, "w") as f:
-        f.write(str(os.getpid()))
-    s = read_settings()
-    if s["format"] not in FORMATS:
-        s["format"] = "label_best"
-    g = Grabber()
-    write_state("downloading", 0)
-    last = "completed"
-    try:
-        cmd_list = g.build_cmd(url, s["format"], s["outdir"])
-        g.run(
-            cmd_list,
-            on_progress=lambda p: write_state("downloading", p),
-            on_file=lambda f: None,
-        )
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc)
-        was_cancelled = (
-            getattr(g.proc, "returncode", None) is not None
-            and g.proc.returncode != 0
-            and "exited with code" in msg
-        )
-        last = "cancelled" if was_cancelled else "failed"
-    write_state("idle", 0, last)
-    try:
-        os.remove(LOCK_FILE)
-    except FileNotFoundError:
-        pass
+    with open(os.devnull, "r+") as devnull:
+        for fd in (0, 1, 2):
+            os.dup2(devnull.fileno(), fd)
 
+    grabber = Grabber()
+    cancelled = False
 
-def main() -> None:
-    os.makedirs(STATE_DIR, exist_ok=True)
-    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    def cancel(signum, frame):
+        nonlocal cancelled
+        cancelled = True
+        grabber.cancel()
 
-    if cmd == "status":
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE) as f:
-                print(f.read())
+    signal.signal(signal.SIGTERM, cancel)
+    last = read_json(STATE_FILE).get("last", "none")
+
+    def progress(percent):
+        if cancelled:
+            grabber.cancel()
         else:
-            print(json.dumps({"state": "idle", "pct": 0, "last": "none"}))
-        return
+            write_json(STATE_FILE, {"state": "downloading", "pct": percent, "last": last})
 
-    if cmd == "settings":
-        print(json.dumps(read_settings()))
-        return
+    try:
+        progress(0)
+        write_json(WORKER_FILE, {"pid": os.getpid(), "started": process_start_time(os.getpid())})
+        os.write(ready_fd, b"1")
+    finally:
+        os.close(ready_fd)
 
-    if cmd == "set":
-        s = read_settings()
-        for arg in sys.argv[2:]:
-            k, _, v = arg.partition("=")
-            if k in ("format", "outdir"):
-                s[k] = v
-        with open(CONF_FILE, "w") as f:
-            json.dump(s, f)
-        print(json.dumps(s))
-        return
+    result = "failed"
+    try:
+        config = settings()
+        command = grabber.build_cmd(url, config["format"], config["outdir"])
+        if not cancelled:
+            grabber.run(command, on_progress=progress, on_file=lambda _: None)
+            result = "completed"
+    except (OSError, RuntimeError, ValueError):
+        pass
+    finally:
+        write_json(STATE_FILE, {"state": "idle", "pct": 0, "last": "cancelled" if cancelled else result})
+        WORKER_FILE.unlink(missing_ok=True)
 
-    if cmd == "cancel":
-        if os.path.exists(LOCK_FILE):
-            try:
-                os.kill(int(open(LOCK_FILE).read().strip()), signal.SIGTERM)
-            except (ProcessLookupError, ValueError):
-                pass
-        return
 
-    if cmd == "start":
-        if os.path.exists(LOCK_FILE):
-            try:
-                pid = int(open(LOCK_FILE).read().strip())
-                os.kill(pid, 0)
-                print(json.dumps({"error": "download in progress"}))
-                return
-            except (ProcessLookupError, ValueError):
-                pass
+def start_download():
+    with DOWNLOAD_LOCK.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"error": "A download is already running."}
+
         url = get_url()
         if not url:
-            print(json.dumps({"error": "no url in clipboard"}))
-            return
-        pid = os.fork()
-        if pid > 0:
-            with open(LOCK_FILE, "w") as f:
-                f.write(str(pid))
-            print(json.dumps({"started": True, "url": url}))
-            return
-        child_run(url)
-        os._exit(0)
+            return {"error": "Copy a video URL to the clipboard first."}
 
-    print("usage: vsb-daemon start|cancel|status|settings|set", file=sys.stderr)
-    sys.exit(2)
+        read_fd, write_fd = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(read_fd)
+            try:
+                run_download(url, write_fd)
+            finally:
+                os._exit(0)
+
+        os.close(write_fd)
+        with os.fdopen(read_fd, "rb") as ready:
+            if ready.read(1) != b"1":
+                return {"error": "Could not start the download."}
+        return {"started": True}
+
+
+def cancel_download():
+    worker = read_json(WORKER_FILE)
+    pid = worker.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return
+    try:
+        fd = os.pidfd_open(pid)
+        try:
+            if process_start_time(pid) == worker.get("started"):
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+        finally:
+            os.close(fd)
+    except (OSError, IndexError):
+        return
+
+
+def main():
+    os.umask(0o077)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command == "status":
+        with DOWNLOAD_LOCK.open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                current = read_json(STATE_FILE)
+                if current.get("state") == "downloading":
+                    current = {"state": "idle", "pct": 0, "last": "failed"}
+                    write_json(STATE_FILE, current)
+            except BlockingIOError:
+                current = read_json(STATE_FILE)
+        print(json.dumps(current or {"state": "idle", "pct": 0, "last": "none"}))
+    elif command == "settings":
+        print(json.dumps(settings()))
+    elif command == "set":
+        with (STATE_DIR / "settings.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            config = settings()
+            for argument in sys.argv[2:]:
+                key, sep, value = argument.partition("=")
+                if sep and key == "format" and value in FORMATS:
+                    config[key] = value
+                if sep and key == "outdir" and value:
+                    path = Path(value).expanduser()
+                    config[key] = os.path.normpath(path if path.is_absolute() else Path.home() / path)
+            write_json(SETTINGS_FILE, config)
+        print(json.dumps(config))
+    elif command == "start":
+        print(json.dumps(start_download()))
+    elif command == "cancel":
+        cancel_download()
+    else:
+        sys.exit("usage: vsb-daemon start|cancel|status|settings|set")
 
 
 if __name__ == "__main__":

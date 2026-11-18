@@ -1,43 +1,33 @@
 # VideoStoreBar
 
-Omarchy bar-widget companion to [VideoStore](https://github.com/CallMeBakugo/VideoStore):
-a VSB chip on your bar that downloads whatever link is in your clipboard.
-Left-click: Paste. Right-click: settings (format + download folder, the
-current choice highlighted with a checkmark). While a download runs, the
-chip becomes a progress bar and Paste greys out in favour of Cancel.
-No history, no memory — last-download status only, never a filename.
+Download a video or extract audio from a clipboard link without leaving the Omarchy bar. Open the **VSB** badge, choose **Paste link**, and watch progress in the bar. Open the flyout again to cancel a running download.
 
-![Left-click: the paste flyout](preview.png)
-
-![Right-click: settings panel](docs-rightclick.png)
+![VideoStoreBar paste flyout](preview.png)
 
 ## Install
 
-    omarchy plugin clone CallMeBakugo/VideoStoreBar
-    omarchy bar put bakugo.videostorebar --section right --after omarchy.tray
-    install -Dm755 vsb-daemon ~/.local/bin/vsb-daemon
+Requires Omarchy 4.x with Quickshell, Python 3.10 or later on Linux, `yt-dlp`, `wl-paste` from `wl-clipboard`, and `ffmpeg` for merging and converting media. The VideoStore engine ships with the widget.
 
-The daemon needs the `core.py` engine from
-[VideoStore](https://github.com/CallMeBakugo/VideoStore) on its import
-path (edit the `sys.path` line in `vsb-daemon` if you keep that repo
-elsewhere), plus `yt-dlp`, `wl-paste` (clipboard), and Python 3.
+```sh
+omarchy plugin add https://github.com/CallMeBakugo/VideoStoreBar.git --enable
+```
 
-## Pieces
+## Use
 
-- `Panel.qml` + `manifest.json` — the Omarchy bar-widget plugin
-  (Quickshell/QML). Chip states: idle (VSB), downloading (fill bar),
-  hover tooltip with last-download status only — never a filename.
-- `vsb-daemon` — forked download runner. One download at a time
-  (lockfile), atomic JSON state that the widget watches reactively,
-  cancel via SIGTERM. Settings persist in
-  `~/.local/state/videostorebar/settings.json`; folder paths are
-  normalised to absolute and the download anchors to $HOME.
+- **Left-click** to open Paste or Cancel. Paste reads one HTTP or HTTPS URL from your clipboard.
+- **Right-click** for format and download-folder settings. Pick best quality, cap the resolution at 1080p or 720p, or choose audio only.
+- Downloads default to `~/Downloads`. The widget runs one download at a time and keeps the last result locally, without storing URL or filename history in its own state.
 
-## Settings
+![Format and download-folder settings](docs-rightclick.png)
 
-Right-click the chip: pick the format (highlighted with a checkmark
-when active) and type the download folder in the box (defaults to
-~/Downloads, created if missing). Or from the terminal:
+## Remove
 
-    vsb-daemon set format=label_1080
-    vsb-daemon set outdir=~/Videos
+Cancel any active download from the widget, then remove it:
+
+```sh
+omarchy plugin remove bakugo.videostorebar --yes
+```
+
+The widget's settings and last result live in `${XDG_STATE_HOME:-$HOME/.local/state}/videostorebar`. Downloads stay in the folder you chose.
+
+[MIT license](LICENSE).
