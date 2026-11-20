@@ -40,6 +40,10 @@ DEST_RE = re.compile(r"Destination:\s+(.+)$")
 Merging_RE = re.compile(r"\[Merger\].*?into\s+(.+)$")
 
 
+class PlaylistRejected(RuntimeError):
+    """The URL points to a collection instead of an individual video."""
+
+
 class Grabber:
     """Builds and runs yt-dlp. Pure logic; safe to headless-test."""
 
@@ -70,8 +74,11 @@ class Grabber:
         os.makedirs(outdir, exist_ok=True)
         return [
             self.bin,
+            "--ignore-config",
             *fmt["args"],
             "--no-playlist",
+            "--playlist-items", "1",
+            "--break-match-filters", "!playlist & !playlist_index",
             "--no-mtime",
             "--restrict-filenames",
             "--newline",  # progress: one line per update, easy to parse
@@ -111,6 +118,8 @@ class Grabber:
                 final_file = d.group(1)
                 on_file(final_file)
         rc = proc.wait()
+        if rc == 101:  # yt-dlp aborts when the single-video filter rejects a result.
+            raise PlaylistRejected()
         if rc != 0:
             raise RuntimeError(f"yt-dlp exited with code {rc}")
         return final_file

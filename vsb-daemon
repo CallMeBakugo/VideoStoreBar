@@ -2,13 +2,15 @@
 import fcntl
 import json
 import os
+import select
 from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 from urllib.parse import urlsplit
 
-from core import FORMATS, Grabber
+from core import FORMATS, Grabber, PlaylistRejected
 
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "videostorebar"
 STATE_FILE = STATE_DIR / "state.json"
@@ -44,12 +46,40 @@ def settings():
     }
 
 
+CLIPBOARD_LIMIT = 8192
+CLIPBOARD_TIMEOUT = 2
+
+
+def read_clipboard():
+    deadline = time.monotonic() + CLIPBOARD_TIMEOUT
+    with subprocess.Popen(
+        ["wl-paste", "--no-newline"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ) as paste:
+        data = bytearray()
+        fd = paste.stdout.fileno()
+        try:
+            while len(data) <= CLIPBOARD_LIMIT:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                    return None
+                chunk = os.read(fd, CLIPBOARD_LIMIT + 1 - len(data))
+                if not chunk:
+                    return data if paste.wait(timeout=max(0, deadline - time.monotonic())) == 0 else None
+                data.extend(chunk)
+            return None
+        finally:
+            if paste.poll() is None:
+                paste.kill()
+
+
 def get_url():
     try:
-        clipboard = subprocess.run(
-            ["wl-paste", "--no-newline"], capture_output=True, text=True, check=True, timeout=2
-        )
-        url = clipboard.stdout.strip()
+        clipboard = read_clipboard()
+        if clipboard is None:
+            return None
+        url = clipboard.decode("utf-8").strip()
         parsed = urlsplit(url)
     except (ValueError, OSError, subprocess.SubprocessError):
         return None
@@ -100,6 +130,8 @@ def run_download(url, ready_fd):
         if not cancelled:
             grabber.run(command, on_progress=progress, on_file=lambda _: None)
             result = "completed"
+    except PlaylistRejected:
+        result = "playlist"
     except (OSError, RuntimeError, ValueError):
         pass
     finally:
@@ -116,7 +148,7 @@ def start_download():
 
         url = get_url()
         if not url:
-            return {"error": "Copy a video URL to the clipboard first."}
+            return {"error": "Copy one video URL to the clipboard (up to 8 KiB)."}
 
         read_fd, write_fd = os.pipe()
         pid = os.fork()

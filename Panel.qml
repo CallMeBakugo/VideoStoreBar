@@ -3,6 +3,7 @@ import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import qs.Ui as Ui
 
@@ -12,8 +13,8 @@ Panel {
   ipcTarget: "bakugo.videostorebar"
   manageIpc: false
 
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
@@ -23,7 +24,7 @@ Panel {
   property var state: null
   readonly property bool downloading: !!state && state.state === "downloading"
   readonly property real pct: Math.max(0, Math.min(100, Number(state?.pct) || 0))
-  readonly property string lastStatus: ["completed", "cancelled", "failed"].includes(state?.last) ? state.last : "none"
+  readonly property string lastStatus: ["completed", "cancelled", "failed", "playlist"].includes(state?.last) ? state.last : "none"
 
   function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
@@ -302,7 +303,9 @@ Panel {
           Text {
             textFormat: Text.PlainText
             width: parent.width
-            text: "Last download: " + (root.downloading ? "in progress" : root.lastStatus)
+            text: !root.downloading && root.lastStatus === "playlist"
+              ? "Playlist skipped. Paste a link to one video."
+              : "Last download: " + (root.downloading ? "in progress" : root.lastStatus)
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -456,38 +459,48 @@ Panel {
             fontFamily: root.fontFamily
           }
 
-          Ui.TextField {
-            id: outdirField
+          Loader {
+            id: folderEditor
             width: parent.width
-            foreground: root.foreground
-            accent: root.urgent
-            placeholderText: "~/Downloads"
-            text: root.settingsJson?.outdir || "~/Downloads"
-            font.pixelSize: Style.font.bodySmall
-            horizontalPadding: Style.space(10)
-            onAccepted: apply()
+            active: root.settingsOpen
+            sourceComponent: Column {
+              width: folderEditor.width
+              spacing: Style.space(12)
 
-            function apply() {
-              var path = text.trim()
-              if (path === "") return
-              Quickshell.execDetached([
-                root.daemonPath, "set",
-                "outdir=" + path
-              ])
-              root.settingsOpen = false
+              Ui.TextField {
+                id: outdirField
+                width: parent.width
+                foreground: root.foreground
+                accent: root.urgent
+                placeholderText: "~/Downloads"
+                text: root.settingsJson?.outdir || "~/Downloads"
+                font.pixelSize: Style.font.bodySmall
+                horizontalPadding: Style.space(10)
+                onAccepted: apply()
+
+                function apply() {
+                  var path = text.trim()
+                  if (path === "") return
+                  Quickshell.execDetached([
+                    root.daemonPath, "set",
+                    "outdir=" + path
+                  ])
+                  root.settingsOpen = false
+                }
+              }
+
+              WidgetButton {
+                width: parent.width
+                bar: root.bar
+                keepSpace: true
+                text: "Save folder"
+                active: true
+                fontSize: Style.font.caption
+                horizontalMargin: 12
+                verticalPadding: 7
+                onPressed: function() { outdirField.apply() }
+              }
             }
-          }
-
-          WidgetButton {
-            width: parent.width
-            bar: root.bar
-            keepSpace: true
-            text: "Save folder"
-            active: true
-            fontSize: Style.font.caption
-            horizontalMargin: 12
-            verticalPadding: 7
-            onPressed: function() { outdirField.apply() }
           }
 
           Text {

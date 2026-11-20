@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "bakugo.videostorebar",
   "name": "VideoStoreBar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "CallMeBakugo",
   "license": "MIT",
   "description": "Download video or audio from a clipboard link with an Omarchy bar progress indicator.",
